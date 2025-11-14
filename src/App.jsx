@@ -26,7 +26,7 @@ export default function App() {
         const formData = new FormData();
         formData.append("file", blob, "recording.webm");
 
-        const response = await fetch("http://127.0.0.1:8000/chat", {
+        const response = await fetch("https://api.zorage.site/chat", {
           method: "POST",
           headers: { "X-Language": "en-US" },
           body: formData,
