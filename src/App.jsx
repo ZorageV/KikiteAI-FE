@@ -1,113 +1,128 @@
-import { useState, useRef } from 'react';
-import DarkVeil from './components/DarkVeil'
+import { useState, useRef, useEffect } from "react";
+import Iridescence from "./components/Iridescence";
 
 export default function App() {
-  const [recording, setRecording] = useState(false);
+  const [stage, setStage] = useState("idle"); // idle | recording | loading | playing
+  const [audioUrl, setAudioUrl] = useState(null);
   const mediaRecorderRef = useRef(null);
-  const audioChunksRef = useRef([]);
+  const chunksRef = useRef([]);
+  const audioRef = useRef(null);
 
-  const toggleRecording = async () => {
-    if (!recording) {
-      // START recording
+  // Start recording
+  const startRecording = async () => {
+    setStage("recording");
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mediaRecorder = new MediaRecorder(stream);
+    mediaRecorderRef.current = mediaRecorder;
+    chunksRef.current = [];
+
+    mediaRecorder.ondataavailable = (e) => chunksRef.current.push(e.data);
+
+    mediaRecorder.onstop = async () => {
+      setStage("loading");
+
+      const blob = new Blob(chunksRef.current, { type: "audio/webm" });
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const mimeType = MediaRecorder.isTypeSupported('audio/mp4')
-          ? 'audio/mp4'
-          : 'audio/webm';
-        const recorder = new MediaRecorder(stream, { mimeType });
-        mediaRecorderRef.current = recorder;
-        audioChunksRef.current = [];
+        const formData = new FormData();
+        formData.append("file", blob, "recording.webm");
 
-        recorder.ondataavailable = (e) => {
-          if (e.data.size > 0) audioChunksRef.current.push(e.data);
-        };
-
-        recorder.start();
-        setRecording(true);
-        console.log('Recording started...');
-      } catch (err) {
-        console.error('Microphone access denied:', err);
-      }
-    } else {
-      // STOP recording
-      mediaRecorderRef.current.stop();
-      setRecording(false);
-
-      mediaRecorderRef.current.onstop = async () => {
-        console.log('Recording stopped');
-
-        const blob = new Blob(audioChunksRef.current, {
-          type: mediaRecorderRef.current.mimeType,
+        const response = await fetch("http://127.0.0.1:8000/chat", {
+          method: "POST",
+          headers: { "X-Language": "en-US" },
+          body: formData,
         });
 
-        // Send audio to API
-        const formData = new FormData();
-        formData.append('file', blob, 'recording.webm');
+        if (!response.ok) throw new Error("API request failed");
 
-        try {
-          const response = await fetch('http://127.0.0.1:8000/chat', {
-            method: 'POST',
-            headers: { 'X-Language': 'en-US' },
-            body: formData,
-          });
+        // Assume API returns audio as blob
+        const responseBlob = await response.blob();
+        const url = URL.createObjectURL(responseBlob);
+        setAudioUrl(url);
+        setStage("playing");
+      } catch (err) {
+        console.error(err);
+        setStage("idle");
+      }
+    };
 
-          const audioBlob = new Blob([await response.arrayBuffer()], {
-            type: blob.type,
-          });
-          new Audio(URL.createObjectURL(audioBlob)).play();
-        } catch (err) {
-          console.error('Error sending file to API:', err);
-        }
-      };
-    }
+    mediaRecorder.start();
+  };
+
+  const stopRecording = () => {
+    mediaRecorderRef.current?.stop();
+  };
+
+  const handleAudioEnd = () => {
+    setStage("idle");
+    setAudioUrl(null);
   };
 
   return (
     <div
       style={{
-        position: 'relative',
-        width: '100vw',
-        height: '100vh',
-        overflow: 'hidden',
+        width: "100vw",
+        height: "100vh",
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+        backgroundColor: "#fff", // always white
+        flexDirection: "column",
       }}
     >
-      {/* DarkVeil background */}
-      <DarkVeil
-        hueShift={30}
-        noiseIntensity={0.1}
-        scanlineIntensity={0.05}
-        warpAmount={0.02}
-      />
-
-      {/* Foreground content */}
-      <div
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          width: '100%',
-          height: '100%',
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-        }}
-      >
+      {stage === "idle" && (
         <button
-          onClick={toggleRecording}
+          onClick={startRecording}
           style={{
-            padding: '18px 42px',
-            fontSize: '20px',
-            fontWeight: '600',
-            borderRadius: '14px',
-            border: '1px solid rgba(255,255,255,0.6)',
-            cursor: 'pointer',
-            background: recording ? '#f44336' : '#4CAF50',
-            color: 'white',
+            padding: "1rem 2rem",
+            fontSize: "1.2rem",
+            borderRadius: "10px",
+            cursor: "pointer",
           }}
         >
-          {recording ? 'Stop Recording' : 'Start Recording'}
+          Record
         </button>
-      </div>
+      )}
+
+      {stage === "recording" && (
+        <>
+          <div style={{ marginBottom: "1rem" }}>Recording...</div>
+          <button
+            onClick={stopRecording}
+            style={{
+              padding: "1rem 2rem",
+              fontSize: "1.2rem",
+              borderRadius: "10px",
+              cursor: "pointer",
+            }}
+          >
+            Stop
+          </button>
+        </>
+      )}
+
+      {stage === "loading" && (
+        <div style={{ fontSize: "1.2rem" }}>Processing and fetching response...</div>
+      )}
+
+      {stage === "playing" && audioUrl && (
+        <div
+          style={{
+            width: "300px",
+            height: "300px",
+            borderRadius: "50%",
+            overflow: "hidden",
+            position: "relative",
+          }}
+        >
+          <Iridescence color={[0.7, 0.8, 2.8]} speed={2} amplitude={1.2} />
+          <audio
+            ref={audioRef}
+            src={audioUrl}
+            autoPlay
+            onEnded={handleAudioEnd}
+          />
+        </div>
+      )}
     </div>
   );
 }
