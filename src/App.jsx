@@ -21,6 +21,10 @@ export default function App() {
   const bufferedMsRef = useRef(0);
   const playheadTimeRef = useRef(0);
 
+  const speechFramesRef = useRef(0);
+  const SILENCE_FRAMES = 6;   // ~120ms
+  const SPEECH_FRAMES = 4;    // ~80ms\
+
   const [connected, setConnected] = useState(false);
 
   /* ===================== WS ===================== */
@@ -82,12 +86,27 @@ export default function App() {
       const START = noiseFloorRef.current * 3.5;
       const STOP = noiseFloorRef.current * 1.5;
 
-      if (energy > START && !userSpeakingRef.current) {
-        userSpeakingRef.current = true;
-        stopPlayback(); // barge-in
+      if (energy > START) {
+        speechFramesRef.current++;
+      } else if (energy < STOP) {
+        speechFramesRef.current = Math.max(
+          0,
+          speechFramesRef.current - 1
+        );
       }
 
-      if (energy < STOP) {
+      if (
+        speechFramesRef.current >= SPEECH_FRAMES &&
+        !userSpeakingRef.current
+      ) {
+        userSpeakingRef.current = true;
+        hardBargeIn();   // 🔥 authoritative cut
+      }
+
+      if (
+        speechFramesRef.current === 0 &&
+        userSpeakingRef.current
+      ) {
         userSpeakingRef.current = false;
       }
 
@@ -101,6 +120,18 @@ export default function App() {
     sourceRef.current.connect(processorRef.current);
     processorRef.current.connect(silentGain);
     silentGain.connect(ctx.destination);
+  };
+  const hardBargeIn = () => {
+    // 1️⃣ Clear future audio
+    playbackQueueRef.current.length = 0;
+    bufferedMsRef.current = 0;
+    playheadTimeRef.current = 0;
+
+    // 2️⃣ Kill playback clock
+    if (playCtxRef.current) {
+      playCtxRef.current.close();
+      playCtxRef.current = null;
+    }
   };
 
   /* ===================== PLAYBACK ===================== */
