@@ -25,6 +25,11 @@ export default function App() {
   const SILENCE_FRAMES = 6;   // ~120ms
   const SPEECH_FRAMES = 4;    // ~80ms\
 
+  const analyserRef = useRef(null);
+  const canvasRef = useRef(null);
+  const animationRef = useRef(null);
+
+
   const [connected, setConnected] = useState(false);
 
   /* ===================== WS ===================== */
@@ -122,17 +127,27 @@ export default function App() {
     silentGain.connect(ctx.destination);
   };
   const hardBargeIn = () => {
-    // 1️⃣ Clear future audio
+    // 1️⃣ Clear future audio + timing
     playbackQueueRef.current.length = 0;
     bufferedMsRef.current = 0;
     playheadTimeRef.current = 0;
 
-    // 2️⃣ Kill playback clock
+    // 2️⃣ Stop visualizer loop (if running)
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current);
+      animationRef.current = null;
+    }
+
+    // 3️⃣ Drop analyser (observer)
+    analyserRef.current = null;
+
+    // 4️⃣ Kill playback clock (authoritative)
     if (playCtxRef.current) {
       playCtxRef.current.close();
       playCtxRef.current = null;
     }
   };
+
 
   /* ===================== PLAYBACK ===================== */
 
@@ -159,8 +174,25 @@ export default function App() {
     }
   };
 
+
+  const stopPlayback = () => {
+    playbackQueueRef.current.length = 0;
+    bufferedMsRef.current = 0;
+    playheadTimeRef.current = 0;
+
+    if (playCtxRef.current) {
+      playCtxRef.current.close();
+      playCtxRef.current = null;
+    }
+  };
   const scheduleChunk = (base64Data) => {
     const ctx = playCtxRef.current;
+
+    if (!analyserRef.current) {
+      analyserRef.current = ctx.createAnalyser();
+      analyserRef.current.fftSize = 64;
+      startVisualizer();
+    }
 
     const bytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
     const pcm16 = new Int16Array(bytes.buffer);
@@ -175,7 +207,10 @@ export default function App() {
 
     const src = ctx.createBufferSource();
     src.buffer = buffer;
-    src.connect(ctx.destination);
+
+    // 🔑 connect through analyser
+    src.connect(analyserRef.current);
+    analyserRef.current.connect(ctx.destination);
 
     const startTime = Math.max(
       playheadTimeRef.current,
@@ -184,29 +219,60 @@ export default function App() {
 
     src.start(startTime);
     playheadTimeRef.current = startTime + buffer.duration;
-
     bufferedMsRef.current -= buffer.duration * 1000;
   };
+  const startVisualizer = () => {
+    if (!canvasRef.current || !analyserRef.current) return;
 
-  const stopPlayback = () => {
-    playbackQueueRef.current.length = 0;
-    bufferedMsRef.current = 0;
-    playheadTimeRef.current = 0;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    const analyser = analyserRef.current;
 
-    if (playCtxRef.current) {
-      playCtxRef.current.close();
-      playCtxRef.current = null;
-    }
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+
+    const draw = () => {
+      analyser.getByteFrequencyData(dataArray);
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const barWidth = canvas.width / bufferLength;
+      let x = 0;
+
+      for (let i = 0; i < bufferLength; i++) {
+        const v = dataArray[i] / 255;
+        const h = v * canvas.height;
+
+        ctx.fillStyle = `rgba(0, 200, 255, ${0.3 + v})`;
+        ctx.fillRect(x, canvas.height - h, barWidth - 2, h);
+
+        x += barWidth;
+      }
+
+      animationRef.current = requestAnimationFrame(draw);
+    };
+
+    draw();
   };
+
 
   /* ===================== UI ===================== */
 
   return (
     <div className="app-container">
-      <button disabled={!connected} onClick={startMic}>
+      {/* <button disabled={!connected} onClick={startMic}>
         Start Talking
-      </button>
-    </div>
+      </button> */}
+        <canvas
+          ref={canvasRef}
+          width={280}
+          height={80}
+          className="audio-graph"
+        />
+        <button disabled={!connected} onClick={startMic}>
+          Start Talking
+        </button>
+      </div>
   );
 }
 
