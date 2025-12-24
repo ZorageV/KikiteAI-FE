@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
 
-const WS_URL = "ws://localhost:8000/ws/audio";
+// const WS_URL = "ws://localhost:8000/ws/audio";
+const WS_URL = "wss://api.zorage.site/ws/audio";
+
 
 export default function App() {
   const wsRef = useRef(null);
