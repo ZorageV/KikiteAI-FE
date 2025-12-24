@@ -13,17 +13,17 @@ export default function App() {
   const sourceRef = useRef(null);
 
   const playbackQueueRef = useRef([]);
-  const playingRef = useRef(false);
   const userSpeakingRef = useRef(false);
   const noiseFloorRef = useRef(0);
 
-  // --- Jitter buffer ---
-  const JITTER_BUFFER_MS = 60;
+  // ---- Jitter buffer + timeline ----
+  const TARGET_BUFFER_MS = 150;
   const bufferedMsRef = useRef(0);
+  const playheadTimeRef = useRef(0);
 
   const [connected, setConnected] = useState(false);
 
-  /* ---------------- WS ---------------- */
+  /* ===================== WS ===================== */
 
   useEffect(() => {
     const ws = new WebSocket(WS_URL);
@@ -33,28 +33,27 @@ export default function App() {
     ws.onclose = () => setConnected(false);
 
     ws.onmessage = (e) => {
-      // interruption
+      // interruption / reset
       if (typeof e.data === "string" && e.data.startsWith("{")) {
         stopPlayback();
         return;
       }
 
-      // enqueue base64 PCM16 @ 24kHz
+      // enqueue PCM16 @ 24kHz (base64)
       playbackQueueRef.current.push(e.data);
 
-      // estimate duration for jitter buffer
+      // estimate duration
       const byteLen = atob(e.data).length;
       const samples = byteLen / 2;
-      const durationMs = (samples / 24000) * 1000;
-      bufferedMsRef.current += durationMs;
+      bufferedMsRef.current += (samples / 24000) * 1000;
 
-      tryPlayNext();
+      scheduleIfReady();
     };
 
     return () => ws.close();
   }, []);
 
-  /* ---------------- MIC ---------------- */
+  /* ===================== MIC ===================== */
 
   const startMic = async () => {
     const ctx = new AudioContext({ sampleRate: 16000 });
@@ -85,7 +84,7 @@ export default function App() {
 
       if (energy > START && !userSpeakingRef.current) {
         userSpeakingRef.current = true;
-        stopPlayback();
+        stopPlayback(); // barge-in
       }
 
       if (energy < STOP) {
@@ -104,28 +103,33 @@ export default function App() {
     silentGain.connect(ctx.destination);
   };
 
-  /* ---------------- PLAYBACK ---------------- */
+  /* ===================== PLAYBACK ===================== */
 
-  const tryPlayNext = async () => {
-    if (playingRef.current) return;
+  const scheduleIfReady = async () => {
     if (userSpeakingRef.current) return;
+    if (bufferedMsRef.current < TARGET_BUFFER_MS) return;
     if (playbackQueueRef.current.length === 0) return;
 
-    // 🔑 jitter buffer gate
-    if (bufferedMsRef.current < JITTER_BUFFER_MS) return;
-
-    playingRef.current = true;
-    const base64Data = playbackQueueRef.current.shift();
-    await playChunk(base64Data);
-  };
-
-  const playChunk = async (base64Data) => {
     if (!playCtxRef.current) {
       playCtxRef.current = new AudioContext({ sampleRate: 24000 });
+      playheadTimeRef.current =
+        playCtxRef.current.currentTime + 0.05; // safety lead
     }
 
     const ctx = playCtxRef.current;
     await ctx.resume();
+
+    while (
+      playbackQueueRef.current.length > 0 &&
+      bufferedMsRef.current >= TARGET_BUFFER_MS
+    ) {
+      const chunk = playbackQueueRef.current.shift();
+      scheduleChunk(chunk);
+    }
+  };
+
+  const scheduleChunk = (base64Data) => {
+    const ctx = playCtxRef.current;
 
     const bytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
     const pcm16 = new Int16Array(bytes.buffer);
@@ -138,28 +142,25 @@ export default function App() {
     const buffer = ctx.createBuffer(1, float32.length, 24000);
     buffer.getChannelData(0).set(float32);
 
-    // consume from jitter buffer
-    bufferedMsRef.current = Math.max(
-      0,
-      bufferedMsRef.current - buffer.duration * 1000
-    );
-
     const src = ctx.createBufferSource();
     src.buffer = buffer;
     src.connect(ctx.destination);
 
-    src.onended = () => {
-      playingRef.current = false;
-      tryPlayNext();
-    };
+    const startTime = Math.max(
+      playheadTimeRef.current,
+      ctx.currentTime + 0.01
+    );
 
-    src.start();
+    src.start(startTime);
+    playheadTimeRef.current = startTime + buffer.duration;
+
+    bufferedMsRef.current -= buffer.duration * 1000;
   };
 
   const stopPlayback = () => {
     playbackQueueRef.current.length = 0;
     bufferedMsRef.current = 0;
-    playingRef.current = false;
+    playheadTimeRef.current = 0;
 
     if (playCtxRef.current) {
       playCtxRef.current.close();
@@ -167,7 +168,7 @@ export default function App() {
     }
   };
 
-  /* ---------------- UI ---------------- */
+  /* ===================== UI ===================== */
 
   return (
     <div className="app-container">
@@ -178,7 +179,7 @@ export default function App() {
   );
 }
 
-/* ---------------- UTILS ---------------- */
+/* ===================== UTILS ===================== */
 
 function floatTo16BitPCM(float32) {
   const buffer = new ArrayBuffer(float32.length * 2);
